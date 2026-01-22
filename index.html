@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ANA Events List</title>
+
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+
+<body>
+  <main class="wrap">
+    <header class="header">
+      <h1>ANA Events Listed</h1>
+      <p class="sub">
+        Upload a text-based PDF. The app extracts text, finds event candidates, and adds only newly found events to the table.
+        (Saved locally in your browser.)
+      </p>
+    </header>
+
+    <section class="card">
+      <div class="controls">
+        <input id="pdfFile" type="file" accept="application/pdf" />
+        <button id="btnParse" type="button">Parse PDF</button>
+        <button id="btnClear" type="button" class="secondary">Clear saved events</button>
+        <button id="btnExport" type="button">Export Saved (Excel)</button>
+      </div>
+
+      <div class="status" id="status">Ready.</div>
+
+      <div class="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Event Details</th>
+              <th>Date</th>
+              <th>Location</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+
+      <details class="debug">
+        <summary>Debug: extracted text preview</summary>
+        <textarea id="debugText" placeholder="Extracted PDF text will appear here (first ~10k chars)…"></textarea>
+      </details>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
+
