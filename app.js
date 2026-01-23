@@ -1,11 +1,11 @@
 // ---------------------------------------------------------
 // Front-end only PDF Event Extractor (text-based PDFs)
 // - Uses PDF.js (CDN) to extract positioned text items
+// - Extracts link annotations (URLs) and attaches them to titles when possible
 // - Parses table rows by X-position into 4 columns
 // - Merges wrapped lines into the previous event
 // - Saves seen events to localStorage and only adds "new"
-// - Renders NEW events at the top, SAVED events below
-// - Export SAVED events to Excel-friendly file (CSV; optional XLSX via SheetJS)
+// - Renders NEW events at the top, SAVED events below (with spacing)
 // ---------------------------------------------------------
 
 const STORAGE_KEY = "pdf_events_seen_v1";
@@ -16,7 +16,6 @@ const STORAGE_KEY = "pdf_events_seen_v1";
 const fileInput = document.getElementById("pdfFile");
 const btnParse  = document.getElementById("btnParse");
 const btnClear  = document.getElementById("btnClear");
-const btnExport = document.getElementById("btnExport"); // ✅ add this button in HTML
 const statusEl  = document.getElementById("status");
 const tbody     = document.getElementById("tbody");
 const debugText = document.getElementById("debugText");
@@ -42,109 +41,12 @@ function saveAll(list){
 }
 
 async function fingerprint(title, date, location){
+  // NOTE: We intentionally do NOT include url in the fingerprint
+  // so a link change doesn’t create “new” duplicates.
   const key = `${normalize(title).toLowerCase()}|${normalize(date)}|${normalize(location).toLowerCase()}`;
   const bytes = new TextEncoder().encode(key);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2,"0")).join("");
-}
-
-// ---------------------------
-// Export helpers
-// ---------------------------
-function pad2(n){ return String(n).padStart(2, "0"); }
-function fileStamp(){
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}`;
-}
-
-function escapeCsvCell(value){
-  const s = String(value ?? "");
-  // Escape if contains comma, quote, or newline
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function downloadBlob(blob, filename){
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function buildExportRows(savedList){
-  // Only export SAVED events (not NEW flags)
-  // Keep it clean for Excel.
-  const rows = savedList.map(ev => ({
-    "Event Details": ev.title || "",
-    "Date": ev.date || "",
-    "Location": ev.location || "",
-    "URL": ev.url || "",
-    "First Saved (Local Time)": ev.addedAt ? new Date(ev.addedAt).toLocaleString() : ""
-  }));
-
-  // Sort by date text first, then title (best-effort)
-  rows.sort((a,b) => {
-    const da = (a["Date"] || "").toLowerCase();
-    const db = (b["Date"] || "").toLowerCase();
-    if (da < db) return -1;
-    if (da > db) return 1;
-    const ta = (a["Event Details"] || "").toLowerCase();
-    const tb = (b["Event Details"] || "").toLowerCase();
-    return ta.localeCompare(tb);
-  });
-
-  return rows;
-}
-
-function exportSavedToCSV(savedList){
-  const rows = buildExportRows(savedList);
-  const headers = ["Event Details", "Date", "Location", "URL", "First Saved (Local Time)"];
-
-  const lines = [];
-  lines.push(headers.map(escapeCsvCell).join(","));
-
-  for (const r of rows){
-    const line = headers.map(h => escapeCsvCell(r[h])).join(",");
-    lines.push(line);
-  }
-
-  // Add UTF-8 BOM for Excel friendliness
-  const csv = "\uFEFF" + lines.join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  downloadBlob(blob, `ANA_Events_Saved_${fileStamp()}.csv`);
-}
-
-function exportSavedToXLSXIfAvailable(savedList){
-  // Optional: if SheetJS is present as window.XLSX, export .xlsx
-  // If not present, return false to indicate fallback needed.
-  if (!window.XLSX) return false;
-
-  const rows = buildExportRows(savedList);
-
-  const ws = window.XLSX.utils.json_to_sheet(rows, { header: [
-    "Event Details", "Date", "Location", "URL", "First Saved (Local Time)"
-  ]});
-
-  // Make columns a bit nicer
-  ws["!cols"] = [
-    { wch: 60 }, // Event Details
-    { wch: 22 }, // Date
-    { wch: 28 }, // Location
-    { wch: 55 }, // URL
-    { wch: 26 }  // First Saved
-  ];
-
-  const wb = window.XLSX.utils.book_new();
-  window.XLSX.utils.book_append_sheet(wb, ws, "Saved Events");
-
-  const out = window.XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  downloadBlob(blob, `ANA_Events_Saved_${fileStamp()}.xlsx`);
-  return true;
 }
 
 // ---------------------------
@@ -163,9 +65,9 @@ function render(events){
     headerTd.style.fontWeight = "800";
     headerTd.style.background = "#fcfcfc";
     headerTd.style.borderBottom = "1px solid #eee";
-    headerTd.style.paddingBottom = "1.25rem";
+    headerTd.style.paddingBottom = "1.25rem"; // gives breathing room after header
     headerTd.textContent = `${label} (${list.length})`;
-    if (label === "Saved") headerTd.style.paddingTop = "2rem";
+    if (label === "Saved") headerTd.style.paddingTop = "2rem"; // space between New and Saved
     headerTr.appendChild(headerTd);
     tbody.appendChild(headerTr);
 
@@ -173,7 +75,16 @@ function render(events){
       const tr = document.createElement("tr");
 
       const td1 = document.createElement("td");
-      td1.textContent = ev.title || "(No event details)";
+      if (ev.url) {
+        const a = document.createElement("a");
+        a.href = ev.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = ev.title || "(No event details)";
+        td1.appendChild(a);
+      } else {
+        td1.textContent = ev.title || "(No event details)";
+      }
 
       const td2 = document.createElement("td");
       td2.textContent = ev.date || "";
@@ -212,8 +123,17 @@ function refresh(){
 }
 
 // ---------------------------
-// PDF.js extract positioned items
+// PDF.js extract positioned items + link annotations
 // ---------------------------
+function normalizeRect(rect){
+  // rect = [x1, y1, x2, y2]
+  const x1 = Math.min(rect[0], rect[2]);
+  const x2 = Math.max(rect[0], rect[2]);
+  const y1 = Math.min(rect[1], rect[3]);
+  const y2 = Math.max(rect[1], rect[3]);
+  return { x1, y1, x2, y2 };
+}
+
 async function extractPagesFromPdf(arrayBuffer) {
   const loadingTask = pdfjsLib.getDocument({
     data: arrayBuffer,
@@ -225,8 +145,9 @@ async function extractPagesFromPdf(arrayBuffer) {
   const pages = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
 
+    // Text content (positions)
+    const content = await page.getTextContent();
     const items = content.items
       .filter(it => it && typeof it.str === "string" && it.str.trim().length)
       .map(it => {
@@ -235,7 +156,22 @@ async function extractPagesFromPdf(arrayBuffer) {
         return { str: it.str, x, y };
       });
 
-    pages.push({ pageNumber: p, items });
+    // Link annotations (URLs)
+    // NOTE: Some PDFs use "dest" instead of direct URL; we only attach when a.url exists.
+    let links = [];
+    try {
+      const annots = await page.getAnnotations();
+      links = (annots || [])
+        .filter(a => a && a.subtype === "Link" && a.url && a.rect && a.rect.length === 4)
+        .map(a => ({
+          url: a.url,
+          ...normalizeRect(a.rect)
+        }));
+    } catch {
+      links = [];
+    }
+
+    pages.push({ pageNumber: p, items, links });
   }
 
   return pages;
@@ -275,7 +211,6 @@ function groupIntoLines(items) {
       text += s;
       prevX = it.x;
     }
-
     line.text = normalize(text);
   }
 
@@ -316,8 +251,9 @@ function getHeaderAnchors(line) {
 
 // ---------------------------
 // Split a line into 4 columns using anchor x positions
+// Also returns the event-column items so we can match link annotations.
 // ---------------------------
-function splitLineIntoColumns(line, anchors) {
+function splitLineIntoColumnsDetailed(line, anchors) {
   const xs = anchors.map(a => a.x);
   const bounds = [
     (xs[0] + xs[1]) / 2,
@@ -343,15 +279,35 @@ function splitLineIntoColumns(line, anchors) {
     date: joinCol(cols.date),
     time: joinCol(cols.time),
     event: joinCol(cols.event),
-    location: joinCol(cols.location)
+    location: joinCol(cols.location),
+    eventItems: cols.event
   };
 }
 
+function findUrlForEventItems(eventItems, links) {
+  if (!eventItems || !eventItems.length || !links || !links.length) return "";
+
+  // Simple + effective: if any event text point lies inside any link rect, take that URL.
+  // This works well for “title is clickable” PDFs.
+  for (const it of eventItems) {
+    const x = it.x;
+    const y = it.y;
+    for (const link of links) {
+      if (x >= link.x1 && x <= link.x2 && y >= link.y1 && y <= link.y2) {
+        return link.url;
+      }
+    }
+  }
+
+  return "";
+}
+
 // ---------------------------
-// Parse events
+// Parse events (same working row logic)
 // - Rows parsed until next header
 // - Wrap continuation lines merge into previous event
 // - Prevent phantom "2026" titles
+// - Attach URL to title when detected
 // ---------------------------
 async function parseEventsFromPages(pages) {
   const candidates = [];
@@ -372,7 +328,7 @@ async function parseEventsFromPages(pages) {
         const rowText = lines[r].text || "";
         if (!rowText) continue;
 
-        const cols = splitLineIntoColumns(lines[r], headerAnchors);
+        const cols = splitLineIntoColumnsDetailed(lines[r], headerAnchors);
 
         const dateCell  = normalize(cols.date);
         const timeCell  = normalize(cols.time);
@@ -382,6 +338,7 @@ async function parseEventsFromPages(pages) {
         if (/^\d+$/.test(rowText)) continue;
         if (/ANA\s+Upcoming\s+Events/i.test(rowText)) continue;
 
+        // New row signal, but don't allow year-only date like "2026" to start a row
         const hasNewRowSignal = Boolean(timeCell) || (Boolean(dateCell) && !isYearOnly(dateCell));
 
         // Continuation line (wrapped Event Details)
@@ -390,11 +347,18 @@ async function parseEventsFromPages(pages) {
             lastEvent.title = normalize(`${lastEvent.title} ${eventCell}`);
           }
           if (locCell) lastEvent.location = normalize(`${lastEvent.location} ${locCell}`.trim());
+
+          // If we didn’t get a URL on the first line, try to detect on continuation too
+          if (!lastEvent.url) {
+            const maybeUrl = findUrlForEventItems(cols.eventItems, page.links);
+            if (maybeUrl) lastEvent.url = maybeUrl;
+          }
           continue;
         }
 
         if (!hasNewRowSignal && !eventCell) continue;
 
+        // Must have Event Details, and it can't be just a year
         if (!eventCell || isYearOnly(eventCell)) continue;
 
         const dateDisplay =
@@ -402,10 +366,13 @@ async function parseEventsFromPages(pages) {
           dateCell ? dateCell :
           timeCell ? timeCell : "";
 
+        const url = findUrlForEventItems(cols.eventItems, page.links);
+
         const ev = {
           title: eventCell,
           date: dateDisplay,
-          location: locCell || ""
+          location: locCell || "",
+          url: url || ""
         };
 
         candidates.push(ev);
@@ -455,7 +422,7 @@ btnParse.addEventListener("click", async () => {
   setStatus("Reading PDF…");
   const buffer = await file.arrayBuffer();
 
-  setStatus("Extracting positioned text…");
+  setStatus("Extracting positioned text + links…");
   let pages;
   try{
     pages = await extractPagesFromPdf(buffer);
@@ -481,9 +448,11 @@ btnParse.addEventListener("click", async () => {
     }
   }
 
+  // Save: old + new
   const merged = [...saved, ...newlyAdded];
   saveAll(merged);
 
+  // For display: mark NEW ones
   const mergedForRender = merged.map(e => ({
     ...e,
     isNew: newlyAdded.some(n => n.fingerprint === e.fingerprint)
@@ -492,24 +461,6 @@ btnParse.addEventListener("click", async () => {
   render(mergedForRender);
   setStatus(`Found ${found.length} event(s). New: ${newlyAdded.length}. Total saved: ${merged.length}.`);
 });
-
-// Export button
-if (btnExport) {
-  btnExport.addEventListener("click", () => {
-    const saved = loadSaved();
-    if (!saved.length) {
-      alert("No saved events to export yet.");
-      return;
-    }
-
-    // Prefer real XLSX if SheetJS is present; otherwise CSV (Excel-friendly)
-    const okXlsx = exportSavedToXLSXIfAvailable(saved);
-    if (!okXlsx) {
-      exportSavedToCSV(saved);
-      alert("Exported as CSV (Excel-friendly). If you want a true .xlsx export, I can enable it with a free CDN library.");
-    }
-  });
-}
 
 // init
 refresh();
